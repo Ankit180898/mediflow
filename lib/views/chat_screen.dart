@@ -11,8 +11,35 @@ class ChatScreen extends StatelessWidget {
   final TextEditingController inputController = TextEditingController();
   final ScrollController scrollController = ScrollController();
   final FocusNode inputFocusNode = FocusNode();
+  
+  // Add a RxList to store messages locally in the UI
+  final RxList<Message> messages = <Message>[].obs;
+  // Add a RxBool to track typing state
+  final RxBool isTyping = false.obs;
+  // Add a RxInt for typing animation
+  final RxInt dotAnimationIndex = 0.obs;
 
-  ChatScreen({super.key});
+  ChatScreen({super.key}) {
+    // Initialize conversation with general prompt type
+    chatController.initializeConversation('general', {});
+    
+    // Setup animation for typing indicator
+    _setupTypingAnimation();
+  }
+
+  void _setupTypingAnimation() {
+    // Create a periodic timer for dot animation
+    ever(isTyping, (bool typing) {
+      if (typing) {
+        Future.delayed(Duration(milliseconds: 300), () {
+          if (isTyping.value) {
+            dotAnimationIndex.value = (dotAnimationIndex.value + 1) % 3;
+            _setupTypingAnimation();
+          }
+        });
+      }
+    });
+  }
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -24,6 +51,59 @@ class ChatScreen extends StatelessWidget {
         );
       }
     });
+  }
+
+  // Implement message sending to work with ChatController
+  void _sendMessage(String text) async {
+    if (text.trim().isEmpty) return;
+    
+    // Add user message to UI
+    final userMessage = Message(
+      content: text,
+      sender: 'user',
+      dateTime: DateTime.now(),
+    );
+    messages.add(userMessage);
+    
+    // Show typing indicator
+    isTyping.value = true;
+    messages.add(Message(
+      content: "Typing...",
+      sender: 'assistant',
+      dateTime: DateTime.now(),
+    ));
+    
+    try {
+      // Send to API and get response
+      final response = await chatController.sendMessage(message: text);
+      
+      // Remove typing indicator and add actual response
+      messages.removeLast();
+      messages.add(Message(
+        content: response.content,
+        sender: 'assistant',
+        dateTime: DateTime.now(),
+      ));
+    } catch (e) {
+      // Remove typing indicator and show error
+      messages.removeLast();
+      messages.add(Message(
+        content: "Sorry, I couldn't process your request. Please try again later.",
+        sender: 'assistant',
+        dateTime: DateTime.now(),
+      ));
+      
+      Get.snackbar(
+        "Error",
+        e.toString(),
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red.shade100,
+        colorText: Colors.red.shade800,
+        margin: EdgeInsets.all(16),
+      );
+    } finally {
+      isTyping.value = false;
+    }
   }
 
   @override
@@ -61,19 +141,19 @@ class ChatScreen extends StatelessWidget {
             _buildInfoBanner(),
             Expanded(
               child: Obx(() {
-                if (chatController.messages.isEmpty) {
+                if (messages.isEmpty) {
                   return _buildWelcomeScreen();
                 }
                 _scrollToBottom();
                 return ListView.builder(
                   controller: scrollController,
-                  itemCount: chatController.messages.length,
+                  itemCount: messages.length,
                   padding: const EdgeInsets.symmetric(
                     vertical: 15,
                     horizontal: 10,
                   ),
                   itemBuilder: (context, index) {
-                    Message msg = chatController.messages[index];
+                    Message msg = messages[index];
                     return _buildMessageItem(msg, context, index);
                   },
                 );
@@ -167,9 +247,6 @@ class ChatScreen extends StatelessWidget {
       "What are symptoms of the flu?",
       "Should I see a doctor for my headache?",
       "How can I reduce fever at home?",
-      // "What specialist treats back pain?",
-      // "How can I prepare for my doctor appointment?",
-      // "Are there home remedies for allergies?"
     ];
 
     return SizedBox(
@@ -178,40 +255,39 @@ class ChatScreen extends StatelessWidget {
         alignment: WrapAlignment.center,
         spacing: 12,
         runSpacing: 12,
-        children:
-            suggestions.map((suggestion) {
-              return InkWell(
-                onTap: () {
-                  inputController.text = suggestion;
-                  chatController.sendMessage(suggestion);
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 12,
+        children: suggestions.map((suggestion) {
+          return InkWell(
+            onTap: () {
+              inputController.text = suggestion;
+              _sendMessage(suggestion);
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 18,
+                vertical: 12,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.teal.shade200),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.teal.withOpacity(0.1),
+                    blurRadius: 4,
+                    offset: Offset(0, 2),
                   ),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.teal.shade200),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.teal.withOpacity(0.1),
-                        blurRadius: 4,
-                        offset: Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Text(
-                    suggestion,
-                    style: TextStyle(
-                      color: Colors.teal.shade700,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
+                ],
+              ),
+              child: Text(
+                suggestion,
+                style: TextStyle(
+                  color: Colors.teal.shade700,
+                  fontWeight: FontWeight.w500,
                 ),
-              );
-            }).toList(),
+              ),
+            ),
+          );
+        }).toList(),
       ),
     );
   }
@@ -223,7 +299,7 @@ class ChatScreen extends StatelessWidget {
     return GestureDetector(
       onLongPress: () {
         if (!isUser && msg.content != "Typing...") {
-          // _showMessageActions(context, msg);
+          _showMessageActions(context, msg);
         }
       },
       child: Align(
@@ -234,14 +310,13 @@ class ChatScreen extends StatelessWidget {
             margin: const EdgeInsets.symmetric(vertical: 6),
             padding: const EdgeInsets.all(2), // Thin border effect
             decoration: BoxDecoration(
-              gradient:
-                  isUser
-                      ? LinearGradient(
-                        colors: [Colors.teal.shade300, Colors.teal.shade400],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      )
-                      : null,
+              gradient: isUser
+                  ? LinearGradient(
+                      colors: [Colors.teal.shade300, Colors.teal.shade400],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    )
+                  : null,
               color: isUser ? null : Colors.white,
               borderRadius: BorderRadius.circular(18),
               boxShadow: [
@@ -251,10 +326,9 @@ class ChatScreen extends StatelessWidget {
                   offset: const Offset(0, 2),
                 ),
               ],
-              border:
-                  isUser
-                      ? null
-                      : Border.all(color: Colors.grey.shade300, width: 1),
+              border: isUser
+                  ? null
+                  : Border.all(color: Colors.grey.shade300, width: 1),
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
@@ -263,12 +337,11 @@ class ChatScreen extends StatelessWidget {
                   horizontal: 16,
                   vertical: 10,
                 ),
-                color:
-                    isUser
-                        ? Colors.transparent
-                        : (msg.content == "Typing..."
-                            ? Colors.grey.shade100
-                            : Colors.white),
+                color: isUser
+                    ? Colors.transparent
+                    : (msg.content == "Typing..."
+                        ? Colors.grey.shade100
+                        : Colors.white),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -297,10 +370,9 @@ class ChatScreen extends StatelessWidget {
                               timeStr,
                               style: TextStyle(
                                 fontSize: 10,
-                                color:
-                                    isUser
-                                        ? Colors.white.withOpacity(0.8)
-                                        : Colors.grey.shade600,
+                                color: isUser
+                                    ? Colors.white.withOpacity(0.8)
+                                    : Colors.grey.shade600,
                               ),
                             ),
                           ),
@@ -317,48 +389,80 @@ class ChatScreen extends StatelessWidget {
     );
   }
 
-  // void _showMessageActions(BuildContext context, Message msg) {
-  //   showModalBottomSheet(
-  //     context: context,
-  //     shape: RoundedRectangleBorder(
-  //       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-  //     ),
-  //     builder: (context) => ActionSheet(
-  //       message: msg,
-  //       onSaveNote: () {
-  //         chatController.saveToNotes(msg);
-  //         Navigator.pop(context);
-  //         Get.snackbar(
-  //           "Saved to Notes",
-  //           "The message has been saved to your notes",
-  //           snackPosition: SnackPosition.BOTTOM,
-  //           backgroundColor: Colors.teal.shade100,
-  //           margin: EdgeInsets.all(16),
-  //           duration: Duration(seconds: 2),
-  //         );
-  //       },
-  //       onCreateReminder: () {
-  //         Navigator.pop(context);
-  //         _showReminderDialog(context, msg);
-  //       },
-  //       onCopy: () {
-  //         chatController.copyToClipboard(msg.content);
-  //         Navigator.pop(context);
-  //         Get.snackbar(
-  //           "Copied",
-  //           "Text copied to clipboard",
-  //           snackPosition: SnackPosition.BOTTOM,
-  //           margin: EdgeInsets.all(16),
-  //           duration: Duration(seconds: 2),
-  //         );
-  //       },
-  //       onShare: () {
-  //         chatController.shareContent(msg.content);
-  //         Navigator.pop(context);
-  //       },
-  //     ),
-  //   );
-  // }
+  void _showMessageActions(BuildContext context, Message msg) {
+    showModalBottomSheet(
+      context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildActionItem(
+              icon: Icons.note_add_outlined,
+              title: "Save to Notes",
+              onTap: () {
+                Navigator.pop(context);
+                Get.snackbar(
+                  "Saved to Notes",
+                  "The message has been saved to your notes",
+                  snackPosition: SnackPosition.BOTTOM,
+                  backgroundColor: Colors.teal.shade100,
+                  margin: EdgeInsets.all(16),
+                  duration: Duration(seconds: 2),
+                );
+              },
+            ),
+            _buildActionItem(
+              icon: Icons.calendar_today_outlined,
+              title: "Create a Reminder",
+              onTap: () {
+                Navigator.pop(context);
+                _showReminderDialog(context, msg);
+              },
+            ),
+            _buildActionItem(
+              icon: Icons.content_copy_outlined,
+              title: "Copy Text",
+              onTap: () {
+                // Copy implementation
+                Navigator.pop(context);
+                Get.snackbar(
+                  "Copied",
+                  "Text copied to clipboard",
+                  snackPosition: SnackPosition.BOTTOM,
+                  margin: EdgeInsets.all(16),
+                  duration: Duration(seconds: 2),
+                );
+              },
+            ),
+            _buildActionItem(
+              icon: Icons.share_outlined,
+              title: "Share",
+              onTap: () {
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionItem({
+    required IconData icon,
+    required String title,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Icon(icon, color: Colors.teal.shade600),
+      title: Text(title),
+      onTap: onTap,
+      contentPadding: EdgeInsets.symmetric(horizontal: 24),
+    );
+  }
 
   void _showReminderDialog(BuildContext context, Message msg) {
     final titleController = TextEditingController(text: "Medical Reminder");
@@ -372,141 +476,134 @@ class ChatScreen extends StatelessWidget {
 
     showDialog(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: Text("Create Reminder"),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: titleController,
-                    decoration: InputDecoration(
-                      labelText: "Title",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                  SizedBox(height: 16),
-                  GestureDetector(
-                    onTap: () async {
-                      final DateTime? picked = await showDatePicker(
-                        context: context,
-                        initialDate: selectedDate,
-                        firstDate: DateTime.now(),
-                        lastDate: DateTime.now().add(Duration(days: 365)),
-                      );
-                      if (picked != null) {
-                        selectedDate = picked;
-                        dateController.text = DateFormat(
-                          'MMM dd, yyyy',
-                        ).format(picked);
-                      }
-                    },
-                    child: AbsorbPointer(
-                      child: TextField(
-                        controller: dateController,
-                        decoration: InputDecoration(
-                          labelText: "Date",
-                          border: OutlineInputBorder(),
-                          suffixIcon: Icon(Icons.calendar_today),
-                        ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: 16),
-                  GestureDetector(
-                    onTap: () async {
-                      final TimeOfDay? picked = await showTimePicker(
-                        context: context,
-                        initialTime: selectedTime,
-                      );
-                      if (picked != null) {
-                        selectedTime = picked;
-                        timeController.text = picked.format(context);
-                      }
-                    },
-                    child: AbsorbPointer(
-                      child: TextField(
-                        controller: timeController,
-                        decoration: InputDecoration(
-                          labelText: "Time",
-                          border: OutlineInputBorder(),
-                          suffixIcon: Icon(Icons.access_time),
-                        ),
-                      ),
-                    ),
-                  ),
-                  SizedBox(height: 16),
-                  Text(
-                    "Reminder note (excerpt):",
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  SizedBox(height: 8),
-                  Container(
-                    padding: EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      msg.content.length > 100
-                          ? "${msg.content.substring(0, 100)}..."
-                          : msg.content,
-                      style: TextStyle(fontSize: 14),
-                    ),
-                  ),
-                ],
+      builder: (context) => AlertDialog(
+        title: Text("Create Reminder"),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleController,
+                decoration: InputDecoration(
+                  labelText: "Title",
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-            actions: [
-              TextButton(
-                child: Text("Cancel"),
-                onPressed: () => Navigator.pop(context),
-              ),
-              TextButton(
-                child: Text("Add to Calendar"),
-                onPressed: () {
-                  DateTime reminderDateTime = DateTime(
-                    selectedDate.year,
-                    selectedDate.month,
-                    selectedDate.day,
-                    selectedTime.hour,
-                    selectedTime.minute,
+              SizedBox(height: 16),
+              GestureDetector(
+                onTap: () async {
+                  final DateTime? picked = await showDatePicker(
+                    context: context,
+                    initialDate: selectedDate,
+                    firstDate: DateTime.now(),
+                    lastDate: DateTime.now().add(Duration(days: 365)),
                   );
-
-                  // chatController.createCalendarEvent(
-                  //   title: titleController.text,
-                  //   description: msg.content,
-                  //   startTime: reminderDateTime,
-                  //   endTime: reminderDateTime.add(Duration(hours: 1)),
-                  // );
-
-                  Navigator.pop(context);
-
-                  Get.snackbar(
-                    "Reminder Created",
-                    "Your medical reminder has been added to calendar",
-                    snackPosition: SnackPosition.BOTTOM,
-                    backgroundColor: Colors.teal.shade100,
-                    margin: EdgeInsets.all(16),
-                    duration: Duration(seconds: 2),
-                    mainButton: TextButton(
-                      child: Text(
-                        "VIEW",
-                        style: TextStyle(color: Colors.teal.shade700),
-                      ),
-                      onPressed: () {
-                        // chatController.openCalendarApp();
-                      },
-                    ),
-                  );
+                  if (picked != null) {
+                    selectedDate = picked;
+                    dateController.text = DateFormat(
+                      'MMM dd, yyyy',
+                    ).format(picked);
+                  }
                 },
+                child: AbsorbPointer(
+                  child: TextField(
+                    controller: dateController,
+                    decoration: InputDecoration(
+                      labelText: "Date",
+                      border: OutlineInputBorder(),
+                      suffixIcon: Icon(Icons.calendar_today),
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(height: 16),
+              GestureDetector(
+                onTap: () async {
+                  final TimeOfDay? picked = await showTimePicker(
+                    context: context,
+                    initialTime: selectedTime,
+                  );
+                  if (picked != null) {
+                    selectedTime = picked;
+                    timeController.text = picked.format(context);
+                  }
+                },
+                child: AbsorbPointer(
+                  child: TextField(
+                    controller: timeController,
+                    decoration: InputDecoration(
+                      labelText: "Time",
+                      border: OutlineInputBorder(),
+                      suffixIcon: Icon(Icons.access_time),
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(height: 16),
+              Text(
+                "Reminder note (excerpt):",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              Container(
+                padding: EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  msg.content.length > 100
+                      ? "${msg.content.substring(0, 100)}..."
+                      : msg.content,
+                  style: TextStyle(fontSize: 14),
+                ),
               ),
             ],
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
           ),
+        ),
+        actions: [
+          TextButton(
+            child: Text("Cancel"),
+            onPressed: () => Navigator.pop(context),
+          ),
+          TextButton(
+            child: Text("Add to Calendar"),
+            onPressed: () {
+              DateTime reminderDateTime = DateTime(
+                selectedDate.year,
+                selectedDate.month,
+                selectedDate.day,
+                selectedTime.hour,
+                selectedTime.minute,
+              );
+
+              // Calendar functionality would go here
+              Navigator.pop(context);
+
+              Get.snackbar(
+                "Reminder Created",
+                "Your medical reminder has been added to calendar",
+                snackPosition: SnackPosition.BOTTOM,
+                backgroundColor: Colors.teal.shade100,
+                margin: EdgeInsets.all(16),
+                duration: Duration(seconds: 2),
+                mainButton: TextButton(
+                  child: Text(
+                    "VIEW",
+                    style: TextStyle(color: Colors.teal.shade700),
+                  ),
+                  onPressed: () {
+                    // Open calendar app functionality
+                  },
+                ),
+              );
+            },
+          ),
+        ],
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+      ),
     );
   }
 
@@ -530,10 +627,9 @@ class ChatScreen extends StatelessWidget {
         height: 8,
         width: 8,
         decoration: BoxDecoration(
-          color:
-              chatController.dotAnimationIndex.value == index
-                  ? Colors.teal
-                  : Colors.grey.shade300,
+          color: dotAnimationIndex.value == index
+              ? Colors.teal
+              : Colors.grey.shade300,
           shape: BoxShape.circle,
         ),
       );
@@ -635,7 +731,7 @@ class ChatScreen extends StatelessWidget {
                     textInputAction: TextInputAction.send,
                     onSubmitted: (text) {
                       if (text.trim().isNotEmpty) {
-                        chatController.sendMessage(text);
+                        _sendMessage(text);
                         inputController.clear();
                       }
                     },
@@ -687,7 +783,7 @@ class ChatScreen extends StatelessWidget {
                     onPressed: () {
                       String text = inputController.text.trim();
                       if (text.isNotEmpty) {
-                        chatController.sendMessage(text);
+                        _sendMessage(text);
                         inputController.clear();
                         inputFocusNode.requestFocus();
                       }
@@ -705,61 +801,60 @@ class ChatScreen extends StatelessWidget {
   void _showHelpDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder:
-          (context) => SizedBox(
-            width: double.infinity,
-            child: AlertDialog(
-              title: Row(
-                children: [
-                  Icon(Icons.info_outline, color: Colors.teal),
-                  SizedBox(width: 10),
-                  Text("How to Use Medical \nAssistant"),
-                ],
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildHelpItem(
-                      Icons.question_answer_outlined,
-                      "Ask Questions",
-                      "Describe your symptoms or ask health-related questions",
-                    ),
-                    _buildHelpItem(
-                      Icons.medical_services_outlined,
-                      "Get Information",
-                      "Learn about potential causes and general health information",
-                    ),
-                    _buildHelpItem(
-                      Icons.calendar_today_outlined,
-                      "Create Reminders",
-                      "Long-press on any assistant response to create calendar reminders",
-                    ),
-                    _buildHelpItem(
-                      Icons.note_outlined,
-                      "Save Notes",
-                      "Long-press on responses to save important information to notes",
-                    ),
-                    _buildHelpItem(
-                      Icons.warning_amber_outlined,
-                      "Not For Emergencies",
-                      "If you have a medical emergency, call 911 or your local emergency number",
-                    ),
-                  ],
+      builder: (context) => SizedBox(
+        width: double.infinity,
+        child: AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.teal),
+              SizedBox(width: 10),
+              Text("How to Use Medical \nAssistant"),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildHelpItem(
+                  Icons.question_answer_outlined,
+                  "Ask Questions",
+                  "Describe your symptoms or ask health-related questions",
                 ),
-              ),
-              actions: [
-                TextButton(
-                  child: Text("Close", style: TextStyle(color: Colors.teal)),
-                  onPressed: () => Navigator.of(context).pop(),
+                _buildHelpItem(
+                  Icons.medical_services_outlined,
+                  "Get Information",
+                  "Learn about potential causes and general health information",
+                ),
+                _buildHelpItem(
+                  Icons.calendar_today_outlined,
+                  "Create Reminders",
+                  "Long-press on any assistant response to create calendar reminders",
+                ),
+                _buildHelpItem(
+                  Icons.note_outlined,
+                  "Save Notes",
+                  "Long-press on responses to save important information to notes",
+                ),
+                _buildHelpItem(
+                  Icons.warning_amber_outlined,
+                  "Not For Emergencies",
+                  "If you have a medical emergency, call 911 or your local emergency number",
                 ),
               ],
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
             ),
           ),
+          actions: [
+            TextButton(
+              child: Text("Close", style: TextStyle(color: Colors.teal)),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ],
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+      ),
     );
   }
 
@@ -800,39 +895,40 @@ class ChatScreen extends StatelessWidget {
   }
 
   void _confirmClearChat(BuildContext context) {
-    if (chatController.messages.isEmpty) return;
+    if (messages.isEmpty) return;
 
     showDialog(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: Text("Clear Conversation"),
-            content: Text(
-              "Are you sure you want to clear the entire conversation history?",
+      builder: (context) => AlertDialog(
+        title: Text("Clear Conversation"),
+        content: Text(
+          "Are you sure you want to clear the entire conversation history?",
+        ),
+        actions: [
+          TextButton(
+            child: Text(
+              "Cancel",
+              style: TextStyle(color: Colors.grey.shade700),
             ),
-            actions: [
-              TextButton(
-                child: Text(
-                  "Cancel",
-                  style: TextStyle(color: Colors.grey.shade700),
-                ),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-              TextButton(
-                child: Text(
-                  "Clear",
-                  style: TextStyle(color: Colors.red.shade700),
-                ),
-                onPressed: () {
-                  chatController.clearMessages();
-                  Navigator.of(context).pop();
-                },
-              ),
-            ],
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
+            onPressed: () => Navigator.of(context).pop(),
           ),
+          TextButton(
+            child: Text(
+              "Clear",
+              style: TextStyle(color: Colors.red.shade700),
+            ),
+            onPressed: () {
+              messages.clear();
+              // Reinitialize conversation
+              chatController.initializeConversation('general', {});
+              Navigator.of(context).pop();
+            },
+          ),
+        ],
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+      ),
     );
   }
 }
